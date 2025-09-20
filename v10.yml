@@ -1,0 +1,444 @@
+blueprint:
+  name: Medication reminder (iOS) - two times per day with ZHA vibration picker
+  description: >
+    Stuurt iOS meldingen om ochtend en avond. De melding komt alleen als de bijbehorende helper nog UIT staat.
+    Je kiest je ZHA vibratiesensor en het bijbehorende command uit een dropdown. Een trilling vóór het eerstvolgende
+    tijdstip zet de juiste helper op AAN (en wist een open melding). Taken of Skip in iOS zet ook de juiste helper op AAN.
+  domain: automation
+
+  input:
+    morning_time:
+      name: Morning time
+      default: "08:00:00"
+      selector:
+        time: {}
+
+    evening_time:
+      name: Evening time
+      default: "18:00:00"
+      selector:
+        time: {}
+
+    daily_reset_time:
+      name: Daily reset time
+      description: "Zet beide helpers weer UIT voor de volgende dag"
+      default: "03:00:00"
+      selector:
+        time: {}
+
+    notify_device:
+      name: iPhone mobile_app device
+      selector:
+        device:
+          integration: mobile_app
+          multiple: false
+
+    helper_morning:
+      name: Helper morning done input_boolean
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: false
+
+    helper_evening:
+      name: Helper evening done input_boolean
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: false
+
+    zha_vibration_device:
+      name: ZHA vibration device
+      description: "Kies je vibratiesensor die via ZHA is gekoppeld"
+      default: null
+      selector:
+        device:
+          integration: zha
+          multiple: false
+
+    zha_vibration_command:
+      name: ZHA vibration command
+      description: "Kies het command dat je sensor stuurt bij trilling"
+      default: "shake"
+      selector:
+        select:
+          options:
+            - "shake"
+            - "vibration"
+            - "tilt"
+            - "drop"
+            - "free_fall"
+            - "move"
+            - "single"
+            - "double"
+            - "hold"
+          mode: dropdown
+
+    notification_title_morning:
+      name: Title morning
+      default: "Medication reminder - morning"
+
+    notification_message_morning:
+      name: Message morning
+      default: "Take your morning medication"
+
+    notification_title_evening:
+      name: Title evening
+      default: "Medication reminder - evening"
+
+    notification_message_evening:
+      name: Message evening
+      default: "Take your evening medication"
+
+    snooze_minutes:
+      name: Snooze minutes
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 120
+          unit_of_measurement: min
+          mode: slider
+          step: 1
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  tag_morning: "meds_morning"
+  tag_evening: "meds_evening"
+  helper_morning: !input helper_morning
+  helper_evening: !input helper_evening
+  notify_device: !input notify_device
+  morning_time_var: !input morning_time
+  evening_time_var: !input evening_time
+  daily_reset_time_var: !input daily_reset_time
+  zha_dev: !input zha_vibration_device
+  zha_cmd: !input zha_vibration_command
+
+triggers:
+  # Reset both helpers daily
+  - id: t_reset
+    platform: time
+    at: !input daily_reset_time
+
+  # Morning reminder
+  - id: t_morning
+    platform: time
+    at: !input morning_time
+
+  # Evening reminder
+  - id: t_evening
+    platform: time
+    at: !input evening_time
+
+  # iOS actions
+  - id: t_ios_action
+    platform: event
+    event_type: ios.notification_action_fired
+    event_data:
+      actionName: ""
+
+  # ZHA vibration (filter directly on device and command)
+  - id: t_vibration
+    platform: event
+    event_type: zha_event
+    event_data:
+      device_id: !input zha_vibration_device
+      command: !input zha_vibration_command
+
+conditions: []
+
+actions:
+  - choose:
+      # A) Daily reset helpers
+      - conditions:
+          - condition: trigger
+            id: t_reset
+        sequence:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: !input helper_morning
+          - service: input_boolean.turn_off
+            target:
+              entity_id: !input helper_evening
+          - service: logbook.log
+            data:
+              name: "Medication"
+              message: "Daily reset both helpers"
+
+      # B) Morning reminder -> notify if morning helper is OFF
+      - conditions:
+          - condition: trigger
+            id: t_morning
+          - condition: state
+            entity_id: !input helper_morning
+            state: "off"
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: !input notification_title_morning
+            message: !input notification_message_morning
+            data:
+              tag: "{{ tag_morning }}"
+              actions:
+                - action: "TAKEN_M"
+                  title: "Taken"
+                - action: "SNOOZE_M"
+                  title: "Later"
+                - action: "SKIP_M"
+                  title: "Skip"
+
+      # C) Evening reminder -> notify if evening helper is OFF
+      - conditions:
+          - condition: trigger
+            id: t_evening
+          - condition: state
+            entity_id: !input helper_evening
+            state: "off"
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: !input notification_title_evening
+            message: !input notification_message_evening
+            data:
+              tag: "{{ tag_evening }}"
+              actions:
+                - action: "TAKEN_E"
+                  title: "Taken"
+                - action: "SNOOZE_E"
+                  title: "Later"
+                - action: "SKIP_E"
+                  title: "Skip"
+
+      # D) iOS actions - morning slot
+      - conditions:
+          - condition: trigger
+            id: t_ios_action
+          - condition: template
+            value_template: "{{ trigger.event.data.actionName in ['TAKEN_M','SNOOZE_M','SKIP_M'] }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'TAKEN_M' }}"
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input helper_morning
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_morning }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "Taken morning via iOS action"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'SNOOZE_M' }}"
+                sequence:
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_morning }}"
+                  - delay:
+                      minutes: !input snooze_minutes
+                  - condition: state
+                    entity_id: !input helper_morning
+                    state: "off"
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    title: !input notification_title_morning
+                    message: !input notification_message_morning
+                    data:
+                      tag: "{{ tag_morning }}"
+                      actions:
+                        - action: "TAKEN_M"
+                          title: "Taken"
+                        - action: "SNOOZE_M"
+                          title: "Later"
+                        - action: "SKIP_M"
+                          title: "Skip"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'SKIP_M' }}"
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input helper_morning
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_morning }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "Skipped morning via iOS action"
+
+      # E) iOS actions - evening slot
+      - conditions:
+          - condition: trigger
+            id: t_ios_action
+          - condition: template
+            value_template: "{{ trigger.event.data.actionName in ['TAKEN_E','SNOOZE_E','SKIP_E'] }}"
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'TAKEN_E' }}"
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input helper_evening
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_evening }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "Taken evening via iOS action"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'SNOOZE_E' }}"
+                sequence:
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_evening }}"
+                  - delay:
+                      minutes: !input snooze_minutes
+                  - condition: state
+                    entity_id: !input helper_evening
+                    state: "off"
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    title: !input notification_title_evening
+                    message: !input notification_message_evening
+                    data:
+                      tag: "{{ tag_evening }}"
+                      actions:
+                        - action: "TAKEN_E"
+                          title: "Taken"
+                        - action: "SNOOZE_E"
+                          title: "Later"
+                        - action: "SKIP_E"
+                          title: "Skip"
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'SKIP_E' }}"
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input helper_evening
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_evening }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "Skipped evening via iOS action"
+
+      # F) ZHA vibration -> set correct helper based on current time wrt morning/evening/daily reset
+      - conditions:
+          - condition: trigger
+            id: t_vibration
+        sequence:
+          - choose:
+              # Late night before reset -> count as evening
+              - conditions:
+                  - condition: time
+                    after: "00:00:00"
+                    before: !input daily_reset_time
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input helper_evening
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_evening }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "ZHA vibration classified as evening (pre-reset)"
+              # Early morning window (after reset until morning time) -> morning
+              - conditions:
+                  - condition: time
+                    after: !input daily_reset_time
+                    before: !input morning_time
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input helper_morning
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_morning }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "ZHA vibration classified as morning"
+              # Daytime before evening time -> evening
+              - conditions:
+                  - condition: time
+                    after: !input morning_time
+                    before: !input evening_time
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input helper_evening
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_evening }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "ZHA vibration classified as evening (daytime)"
+              # After evening until midnight -> evening
+              - conditions:
+                  - condition: time
+                    after: !input evening_time
+                    before: "23:59:59"
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input helper_evening
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag_evening }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "ZHA vibration classified as evening (late)"
+          - delay: "00:00:01"
+
+    default: []
