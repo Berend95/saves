@@ -1,0 +1,246 @@
+blueprint:
+  name: Medication reminder (iOS) — smart with vibration pre-check
+  description: >
+    Stuur de herinnering op tijd *alleen als* de vibratiesensor nog niet is opgepakt.
+    Als je de pot/strip vóór de tijd oppakt, gaan we ervan uit dat de medicatie is ingenomen
+    en wordt er géén herinnering gestuurd. Oppakken ná de tijd markeert als 'Taken' en wist
+    een eventuele open notificatie. Inclusief iOS-actieknoppen (Taken/Snooze/Skip).
+  domain: automation
+
+  input:
+    reminder_time:
+      name: Reminder time
+      selector:
+        time: {}
+
+    daily_reset_time:
+      name: Dagelijkse reset tijd
+      description: Zet de 'vandaag klaar' vlag weer uit voor de volgende dag
+      default: "03:00:00"
+      selector:
+        time: {}
+
+    notify_device:
+      name: iPhone (mobile_app device)
+      selector:
+        device:
+          integration: mobile_app
+          multiple: false
+
+    done_boolean:
+      name: Done/suppressed boolean (vandaag)
+      description: input_boolean dat aangeeft of vandaag al is ingenomen of dat we niet meer hoeven te herinneren
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: false
+
+    zha_vibration:
+      name: ZHA vibratiesensor (optioneel)
+      default: null
+      selector:
+        device:
+          integration: zha
+          multiple: false
+
+    vibration_command:
+      name: Vibratie-commando
+      description: Het zha_event command dat je sensor stuurt bij oppakken/schudden
+      default: shake
+      selector:
+        text: {}
+
+    notification_title:
+      name: Notificatietitel
+      default: "Medication reminder!"
+
+    notification_message:
+      name: Notificatiebericht
+      default: "It's time to take your medication"
+
+    taken_action_title:
+      name: iOS Action: Taken
+      default: "Taken"
+
+    snooze_action_title:
+      name: iOS Action: Snooze
+      default: "Later"
+
+    skip_action_title:
+      name: iOS Action: Skip
+      default: "Skip"
+
+    snooze_minutes:
+      name: Snooze (minuten)
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 120
+          unit_of_measurement: min
+          mode: slider
+          step: 1
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  tag: "medication_reminder_ios"
+  done_boolean: !input done_boolean
+  notify_device: !input notify_device
+
+triggers:
+  # 1) Dagelijkse reset van de 'done' vlag
+  - id: t_reset
+    platform: time
+    at: !input daily_reset_time
+
+  # 2) Herinneringstijd
+  - id: t_reminder
+    platform: time
+    at: !input reminder_time
+
+  # 3) iOS actieknoppen
+  - id: t_ios_action
+    platform: event
+    event_type: ios.notification_action_fired
+    event_data:
+      actionName: ""
+
+  # 4) Vibratie (optioneel)
+  - id: t_vibration
+    platform: event
+    event_type: zha_event
+    event_data:
+      device_id: !input zha_vibration
+      command: !input vibration_command
+
+conditions: []
+
+actions:
+  - choose:
+      # A) Reset dagelijkse vlag
+      - conditions:
+          - condition: trigger
+            id: t_reset
+        sequence:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: !input done_boolean
+          - service: logbook.log
+            data:
+              name: "Medication"
+              message: "Daily reset done flag"
+
+      # B) Vibratie: markeer 'genomen' en wis eventuele notificatie (voor en na de tijd)
+      - conditions:
+          - condition: trigger
+            id: t_vibration
+        sequence:
+          - service: input_boolean.turn_on
+            target:
+              entity_id: !input done_boolean
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: clear_notification
+            data:
+              tag: "{{ tag }}"
+          - service: logbook.log
+            data:
+              name: "Medication"
+              message: "Marked taken via vibration"
+
+      # C) Herinneringstijd: stuur notificatie *alleen als* nog niet genomen/onderdrukt
+      - conditions:
+          - condition: trigger
+            id: t_reminder
+          - condition: state
+            entity_id: !input done_boolean
+            state: "off"
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: !input notification_title
+            message: !input notification_message
+            data:
+              tag: "{{ tag }}"
+              actions:
+                - action: "TAKEN"
+                  title: !input taken_action_title
+                - action: "SNOOZE"
+                  title: !input snooze_action_title
+                - action: "SKIP"
+                  title: !input skip_action_title
+
+      # D) iOS acties
+      - conditions:
+          - condition: trigger
+            id: t_ios_action
+        sequence:
+          - choose:
+              # D1) TAKEN -> markeer klaar vandaag en wis notificatie
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'TAKEN' }}"
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input done_boolean
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: clear_notification
+                    data:
+                      tag: "{{ tag }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "Taken via iOS action"
+              # D2) SNOOZE -> verstuur later opnieuw, alleen als nog niet 'done' tegen die tijd
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'SNOOZE' }}"
+                sequence:
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: clear_notification
+                    data:
+                      tag: "{{ tag }}"
+                  - delay:
+                      minutes: !input snooze_minutes
+                  - condition: state
+                    entity_id: !input done_boolean
+                    state: "off"
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    title: !input notification_title
+                    message: !input notification_message
+                    data:
+                      tag: "{{ tag }}"
+                      actions:
+                        - action: "TAKEN"
+                          title: !input taken_action_title
+                        - action: "SNOOZE"
+                          title: !input snooze_action_title
+                        - action: "SKIP"
+                          title: !input skip_action_title
+              # D3) SKIP -> onderdruk rest van de dag (geen verdere reminders)
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'SKIP' }}"
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input done_boolean
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: clear_notification
+                    data:
+                      tag: "{{ tag }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "Skipped for today"
+
+    default: []
