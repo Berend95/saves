@@ -1,10 +1,10 @@
 blueprint:
-  name: Medication reminder (iOS) — smart with vibration pre-check
+  name: Medication reminder (iOS) - smart with vibration pre-check
   description: >
-    Stuur de herinnering op tijd *alleen als* de vibratiesensor nog niet is opgepakt.
-    Als je de pot/strip vóór de tijd oppakt, gaan we ervan uit dat de medicatie is ingenomen
-    en wordt er géén herinnering gestuurd. Oppakken ná de tijd markeert als 'Taken' en wist
-    een eventuele open notificatie. Inclusief iOS-actieknoppen (Taken/Snooze/Skip).
+    Stuur de herinnering op tijd alleen als de vibratiesensor nog niet is opgepakt.
+    Als je de pot/strip voor de tijd oppakt, gaan we ervan uit dat de medicatie is ingenomen
+    en wordt er geen herinnering gestuurd. Oppakken na de tijd markeert als 'Taken' en wist
+    een eventuele open notificatie. Inclusief iOS actieknoppen (Taken/Snooze/Skip).
   domain: automation
 
   input:
@@ -28,7 +28,7 @@ blueprint:
           multiple: false
 
     done_boolean:
-      name: Done/suppressed boolean (vandaag)
+      name: Done suppressed boolean (vandaag)
       description: input_boolean dat aangeeft of vandaag al is ingenomen of dat we niet meer hoeven te herinneren
       selector:
         entity:
@@ -44,8 +44,8 @@ blueprint:
           multiple: false
 
     vibration_command:
-      name: Vibratie-commando
-      description: Het zha_event command dat je sensor stuurt bij oppakken/schudden
+      name: Vibratie commando
+      description: Het zha_event command dat je sensor stuurt bij oppakken of schudden
       default: shake
       selector:
         text: {}
@@ -59,15 +59,15 @@ blueprint:
       default: "It's time to take your medication"
 
     taken_action_title:
-      name: "iOS Action: Taken"
+      name: "iOS Action Taken"
       default: "Taken"
 
     snooze_action_title:
-      name: "iOS Action: Snooze"
+      name: "iOS Action Snooze"
       default: "Later"
 
     skip_action_title:
-      name: "iOS Action: Skip"
+      name: "iOS Action Skip"
       default: "Skip"
 
     snooze_minutes:
@@ -150,7 +150,7 @@ actions:
               name: "Medication"
               message: "Marked taken via vibration"
 
-      # C) Herinneringstijd: stuur notificatie *alleen als* nog niet genomen/onderdrukt
+      # C) Herinneringstijd: stuur notificatie alleen als nog niet genomen/onderdrukt
       - conditions:
           - condition: trigger
             id: t_reminder
