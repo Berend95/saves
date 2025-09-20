@@ -1,9 +1,10 @@
 blueprint:
-  name: Medication reminder (iOS) - smart with vibration pre-check (v3, ZHA or entity)
+  name: Medication reminder (iOS) - smart with vibration pre-check (v3 fix)
   description: >
-    Herinnering op tijd alleen als er nog geen vibratie is gedetecteerd.
-    Vóór de tijd oppakken -> geen notificatie. Ná de tijd oppakken -> markeer 'Taken' en wis notificatie.
-    Werkt met ZHA (zha_event) of met een binary_sensor-entity (bijv. Zigbee2MQTT).
+    Stuur de herinnering op tijd alleen als de vibratiesensor nog niet is opgepakt.
+    Als je de pot of strip voor de tijd oppakt, gaan we ervan uit dat de medicatie is ingenomen
+    en wordt er geen herinnering gestuurd. Oppakken na de tijd markeert als 'Taken' en wist
+    een eventuele open notificatie. Inclusief iOS actieknoppen (Taken/Snooze/Skip).
   domain: automation
 
   input:
@@ -14,6 +15,7 @@ blueprint:
 
     daily_reset_time:
       name: Dagelijkse reset tijd
+      description: "Zet de vlag voor vandaag weer uit voor de volgende dag"
       default: "03:00:00"
       selector:
         time: {}
@@ -27,12 +29,13 @@ blueprint:
 
     done_boolean:
       name: Done suppressed boolean (vandaag)
+      description: "input_boolean dat aangeeft of vandaag al is ingenomen of dat herinneren niet meer nodig is"
       selector:
         entity:
           domain: input_boolean
           multiple: false
 
-    # === Vibratie via ZHA (event) ===
+    # Vibratie via ZHA (event)
     zha_vibration:
       name: ZHA vibratiesensor (optioneel)
       default: null
@@ -42,24 +45,24 @@ blueprint:
           multiple: false
 
     vibration_command:
-      name: ZHA vibratie-commando
-      description: zha_event 'command' waarde (bijv. shake, vibration, tilt)
+      name: ZHA vibratie commando
+      description: "zha_event command waarde, bijv. shake of vibration"
       default: shake
       selector:
         text: {}
 
-    # === Vibratie via entity (state) ===
+    # Vibratie via entity (state)
     vibration_entity:
       name: Vibration entity (optioneel)
-      description: Kies bijv. je binary_sensor.* voor vibratie/acceleration
+      description: "Kies je binary_sensor.* die trilling aangeeft"
       default: null
       selector:
         entity:
           multiple: false
 
     vibration_on_state:
-      name: Entity 'on' state (optioneel)
-      description: Naar welke waarde gaat de entity bij vibratie? Meestal: on
+      name: Entity on state (optioneel)
+      description: "Welke state ziet je entity bij trilling? Meestal 'on'"
       default: "on"
       selector:
         text: {}
@@ -106,6 +109,7 @@ variables:
   zha_vibration_device: !input zha_vibration
   vibration_entity: !input vibration_entity
   vibration_on_state: !input vibration_on_state
+  vibration_command: !input vibration_command
 
 triggers:
   # Dagelijkse reset
@@ -125,16 +129,15 @@ triggers:
     event_data:
       actionName: ""
 
-  # ZHA vibratie-event (breed; we filteren in actions op juiste device en command)
+  # ZHA vibratie-event (brede listener; filter in actions)
   - id: t_vibration_zha
     platform: event
     event_type: zha_event
 
-  # Entity vibratie (state change naar on)
+  # Entity vibratie via state_changed event (mogelijk voor elke integratie)
   - id: t_vibration_entity
-    platform: state
-    entity_id: !input vibration_entity
-    to: !input vibration_on_state
+    platform: event
+    event_type: state_changed
 
 conditions: []
 
@@ -153,18 +156,18 @@ actions:
               name: "Medication"
               message: "Daily reset done flag"
 
-      # B1) Vibratie via ZHA (alleen als device & command matchen)
+      # B1) Vibratie via ZHA
       - conditions:
           - condition: trigger
             id: t_vibration_zha
           - condition: template
             value_template: >
-              {{ (zha_vibration_device is not none) and
-                 (trigger.event.data is defined) and
-                 (trigger.event.data.device_id is defined) and
-                 (trigger.event.data.device_id == zha_vibration_device) and
-                 (trigger.event.data.command is defined) and
-                 (trigger.event.data.command == (iif(inputs.vibration_command is defined, inputs.vibration_command, 'shake'))) }}
+              {{ zha_vibration_device is not none and
+                 trigger.event.data is defined and
+                 trigger.event.data.device_id is defined and
+                 trigger.event.data.device_id == zha_vibration_device and
+                 trigger.event.data.command is defined and
+                 trigger.event.data.command == vibration_command }}
         sequence:
           - service: input_boolean.turn_on
             target:
@@ -180,10 +183,18 @@ actions:
               name: "Medication"
               message: "Marked taken via vibration (ZHA)"
 
-      # B2) Vibratie via entity
+      # B2) Vibratie via entity (state_changed)
       - conditions:
           - condition: trigger
             id: t_vibration_entity
+          - condition: template
+            value_template: >
+              {{ vibration_entity is not none and
+                 trigger.event.data is defined and
+                 trigger.event.data.entity_id is defined and
+                 trigger.event.data.entity_id == vibration_entity and
+                 trigger.event.data.new_state is defined and
+                 trigger.event.data.new_state.state == vibration_on_state }}
         sequence:
           - service: input_boolean.turn_on
             target:
