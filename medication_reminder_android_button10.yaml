@@ -1,0 +1,297 @@
+blueprint:
+  name: Medication reminder (iOS) - smart with vibration pre-check (v3, ZHA or entity)
+  description: >
+    Herinnering op tijd alleen als er nog geen vibratie is gedetecteerd.
+    Vóór de tijd oppakken -> geen notificatie. Ná de tijd oppakken -> markeer 'Taken' en wis notificatie.
+    Werkt met ZHA (zha_event) of met een binary_sensor-entity (bijv. Zigbee2MQTT).
+  domain: automation
+
+  input:
+    reminder_time:
+      name: Reminder time
+      selector:
+        time: {}
+
+    daily_reset_time:
+      name: Dagelijkse reset tijd
+      default: "03:00:00"
+      selector:
+        time: {}
+
+    notify_device:
+      name: iPhone (mobile_app device)
+      selector:
+        device:
+          integration: mobile_app
+          multiple: false
+
+    done_boolean:
+      name: Done suppressed boolean (vandaag)
+      selector:
+        entity:
+          domain: input_boolean
+          multiple: false
+
+    # === Vibratie via ZHA (event) ===
+    zha_vibration:
+      name: ZHA vibratiesensor (optioneel)
+      default: null
+      selector:
+        device:
+          integration: zha
+          multiple: false
+
+    vibration_command:
+      name: ZHA vibratie-commando
+      description: zha_event 'command' waarde (bijv. shake, vibration, tilt)
+      default: shake
+      selector:
+        text: {}
+
+    # === Vibratie via entity (state) ===
+    vibration_entity:
+      name: Vibration entity (optioneel)
+      description: Kies bijv. je binary_sensor.* voor vibratie/acceleration
+      default: null
+      selector:
+        entity:
+          multiple: false
+
+    vibration_on_state:
+      name: Entity 'on' state (optioneel)
+      description: Naar welke waarde gaat de entity bij vibratie? Meestal: on
+      default: "on"
+      selector:
+        text: {}
+
+    # Notificaties
+    notification_title:
+      name: Notificatietitel
+      default: "Medication reminder!"
+
+    notification_message:
+      name: Notificatiebericht
+      default: "It's time to take your medication"
+
+    taken_action_title:
+      name: "iOS Action Taken"
+      default: "Taken"
+
+    snooze_action_title:
+      name: "iOS Action Snooze"
+      default: "Later"
+
+    skip_action_title:
+      name: "iOS Action Skip"
+      default: "Skip"
+
+    snooze_minutes:
+      name: Snooze (minuten)
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 120
+          unit_of_measurement: min
+          mode: slider
+          step: 1
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  tag: "medication_reminder_ios"
+  done_boolean: !input done_boolean
+  notify_device: !input notify_device
+  zha_vibration_device: !input zha_vibration
+  vibration_entity: !input vibration_entity
+  vibration_on_state: !input vibration_on_state
+
+triggers:
+  # Dagelijkse reset
+  - id: t_reset
+    platform: time
+    at: !input daily_reset_time
+
+  # Herinneringstijd
+  - id: t_reminder
+    platform: time
+    at: !input reminder_time
+
+  # iOS acties
+  - id: t_ios_action
+    platform: event
+    event_type: ios.notification_action_fired
+    event_data:
+      actionName: ""
+
+  # ZHA vibratie-event (breed; we filteren in actions op juiste device en command)
+  - id: t_vibration_zha
+    platform: event
+    event_type: zha_event
+
+  # Entity vibratie (state change naar on)
+  - id: t_vibration_entity
+    platform: state
+    entity_id: !input vibration_entity
+    to: !input vibration_on_state
+
+conditions: []
+
+actions:
+  - choose:
+      # A) Daily reset
+      - conditions:
+          - condition: trigger
+            id: t_reset
+        sequence:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: !input done_boolean
+          - service: logbook.log
+            data:
+              name: "Medication"
+              message: "Daily reset done flag"
+
+      # B1) Vibratie via ZHA (alleen als device & command matchen)
+      - conditions:
+          - condition: trigger
+            id: t_vibration_zha
+          - condition: template
+            value_template: >
+              {{ (zha_vibration_device is not none) and
+                 (trigger.event.data is defined) and
+                 (trigger.event.data.device_id is defined) and
+                 (trigger.event.data.device_id == zha_vibration_device) and
+                 (trigger.event.data.command is defined) and
+                 (trigger.event.data.command == (iif(inputs.vibration_command is defined, inputs.vibration_command, 'shake'))) }}
+        sequence:
+          - service: input_boolean.turn_on
+            target:
+              entity_id: !input done_boolean
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            message: "clear_notification"
+            data:
+              tag: "{{ tag }}"
+          - service: logbook.log
+            data:
+              name: "Medication"
+              message: "Marked taken via vibration (ZHA)"
+
+      # B2) Vibratie via entity
+      - conditions:
+          - condition: trigger
+            id: t_vibration_entity
+        sequence:
+          - service: input_boolean.turn_on
+            target:
+              entity_id: !input done_boolean
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            message: "clear_notification"
+            data:
+              tag: "{{ tag }}"
+          - service: logbook.log
+            data:
+              name: "Medication"
+              message: "Marked taken via vibration (entity)"
+
+      # C) Herinneringstijd -> stuur notificatie als nog niet 'done'
+      - conditions:
+          - condition: trigger
+            id: t_reminder
+          - condition: state
+            entity_id: !input done_boolean
+            state: "off"
+        sequence:
+          - device_id: !input notify_device
+            domain: mobile_app
+            type: notify
+            title: !input notification_title
+            message: !input notification_message
+            data:
+              tag: "{{ tag }}"
+              actions:
+                - action: "TAKEN"
+                  title: !input taken_action_title
+                - action: "SNOOZE"
+                  title: !input snooze_action_title
+                - action: "SKIP"
+                  title: !input skip_action_title
+
+      # D) iOS actions
+      - conditions:
+          - condition: trigger
+            id: t_ios_action
+        sequence:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'TAKEN' }}"
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input done_boolean
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "Taken via iOS action"
+
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'SNOOZE' }}"
+                sequence:
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag }}"
+                  - delay:
+                      minutes: !input snooze_minutes
+                  - condition: state
+                    entity_id: !input done_boolean
+                    state: "off"
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    title: !input notification_title
+                    message: !input notification_message
+                    data:
+                      tag: "{{ tag }}"
+                      actions:
+                        - action: "TAKEN"
+                          title: !input taken_action_title
+                        - action: "SNOOZE"
+                          title: !input snooze_action_title
+                        - action: "SKIP"
+                          title: !input skip_action_title
+
+              - conditions:
+                  - condition: template
+                    value_template: "{{ trigger.event.data.actionName == 'SKIP' }}"
+                sequence:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: !input done_boolean
+                  - device_id: !input notify_device
+                    domain: mobile_app
+                    type: notify
+                    message: "clear_notification"
+                    data:
+                      tag: "{{ tag }}"
+                  - service: logbook.log
+                    data:
+                      name: "Medication"
+                      message: "Skipped for today"
+
+    default: []
