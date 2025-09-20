@@ -59,15 +59,15 @@ blueprint:
       default: "It's time to take your medication"
 
     taken_action_title:
-      name: iOS Action: Taken
+      name: "iOS Action: Taken"
       default: "Taken"
 
     snooze_action_title:
-      name: iOS Action: Snooze
+      name: "iOS Action: Snooze"
       default: "Later"
 
     skip_action_title:
-      name: iOS Action: Skip
+      name: "iOS Action: Skip"
       default: "Skip"
 
     snooze_minutes:
